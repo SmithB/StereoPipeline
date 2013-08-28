@@ -1145,7 +1145,7 @@ def est_epipolar_vec(dxy, C, C_tol, ep_vec_initial, F_use):
     """
     if ep_vec_initial is not None:
         return ep_vec_initial, np.zeros([1,2])
-    
+
     P_use=100*np.array([(1-F_use)/2., (F_use+1.)/2.])
     ctr_vals=(dxy[:,0] >= ss.scoreatpercentile(dxy[:,0], P_use[0])) & (dxy[:,0] <= ss.scoreatpercentile(dxy[:,0], P_use[1])) & (dxy[:,1] >= ss.scoreatpercentile(dxy[:,1], P_use[0])) & (dxy[:,1] <= ss.scoreatpercentile(dxy[:,1], P_use[1]))
     good=ctr_vals & np.array(C.ravel()>C_tol, dtype=bool)
@@ -1313,7 +1313,7 @@ def main():
         XC=np.append(XC, int((XC[-1]+ftm.T_c0c1[1])/2.))
     YC=np.arange(ftm.T_r0r1[0]+edge_pad[1], ftm.T_r0r1[1]-edge_pad[1], options.coarse_skip)
     if YC[-1] < ftm.T_r0r1[1]:
-        YC=np.append(YC, int((YC[-1]+ftm.T_r0r1[1])/2.))       
+        YC=np.append(YC, int((YC[-1]+ftm.T_r0r1[1])/2.))
     [XCg, YCg]=np.meshgrid(XC, YC)
     XY0=np.c_[XCg.ravel(), YCg.ravel()]
 
@@ -1557,11 +1557,10 @@ def main():
 
     goodbad=np.append(np.c_[good_xy, np.ones([good_xy.shape[0], 1])], np.c_[bad_xy, np.zeros([bad_xy.shape[0], 1])], 0)
     N_dilate=np.ceil(options.coarse_skip/options.output_scale/4.)
-    xg1, yg1=np.meshgrid(np.arange(-N_dilate, N_dilate+1), np.arange(-N_dilate, N_dilate+1))
-    dilate_kernel=xg1**2+yg1**2 <=np.float32(N_dilate)**2
+    dilate_kernel=np.ones([2*N_dilate,1])
 
     # loop over blocks in the output file
-    stride=out_blocksize-out_block_pad
+    stride=out_blocksize
     cg, rg=np.meshgrid(np.arange(0, nx1, stride),    np.arange(0, ny1, stride))
     for c0, r0 in zip(cg.ravel(), rg.ravel()) :
         # select the range of pixels for the output subset
@@ -1607,7 +1606,8 @@ def main():
                 quality=np.zeros([out_sub_nr, out_sub_nc])
                 print "gridding error for disparity quality, writing zeros to file:"
                 print e.message
-            quality=binary_dilation(quality>0, dilate_kernel)
+            quality=binary_dilation(quality>0, structure=dilate_kernel)
+            quality=binary_dilation(quality>0, structure=dilate_kernel.transpose() )
         else:
             quality=np.zeros([out_sub_nr, out_sub_nc])
         zi[2, :, :] =   quality
