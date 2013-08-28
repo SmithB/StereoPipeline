@@ -1278,6 +1278,10 @@ def main():
         options.coarse_skip = np.min([prev2x/4, prev2y/4])
         print "Warning: decreasing coarse skip to: %d" % options.coarse_skip
 
+    # output parameters
+    out_blocksize=1024    # blocksize for writing the output grids, in output pixels (input res / output_scale)
+    out_block_pad=np.ceil(np.min([1024, options.coarse_skip*1.5])/options.output_scale)
+
     s_nx=options.s_nx
     s_ny=options.s_ny
     t_pixels=options.t_pixels
@@ -1510,76 +1514,130 @@ def main():
     bad_xy=np.c_[bad_mask_mat.nonzero()][:,[1, 0]]
     bad_xy=np.c_[GT[0]+bad_xy[:,0]*GT[1]+bad_xy[:,1]*GT[2], GT[3]+bad_xy[:,0]*GT[4]+bad_xy[:,1]*GT[5]]
 
-    if options.output_scale > 0.:
-        out=out/options.output_scale
-        # scale x, y, and C back up by output_scale
-        for col in [0, 1, 4]:
-            out[:,col]=out[:,col]*options.output_scale
-        driver = ftm.T_ds.GetDriver()
-        delta_x=options.output_scale*np.abs(GT[1])
-        x0=GT[0]
-        y0=GT[3]
-        x0=delta_x*(np.ceil(x0/delta_x))
-        y0=delta_x*(np.ceil(y0/delta_x))
-        Gdx=GT[1]*options.output_scale
-        Gdy=GT[5]*options.output_scale
+    for col in [2, 3, 5, 6]:
+        out[:,col]=out[:,col]/options.output_scale
 
-        GT1=np.array(GT)
-        GT1[0]=x0;
-        GT1[3]=y0;
-        GT1[1]=Gdx
-        GT1[5]=Gdy
-        nx1=np.int(im_shape[1]/options.output_scale)
-        ny1=np.int(im_shape[0]/options.output_scale)
-        xg, yg=np.meshgrid((np.arange(0, nx1)+0.5)*Gdx+x0, (np.arange(0, ny1)+0.5)*Gdy+y0)
-        disp_file = output_prefix + '-D_sub.tif'
-        print("Writing: " + disp_file)
-        outDs = driver.Create(disp_file,  nx1, ny1, 3, gdalconst.GDT_Int32)
-        # interoate the scaled dx and dy values
-        zi = np.nan_to_num(griddata(out[:,0:2], out[:,2], (xg, yg), method='linear'))
-        outBand = outDs.GetRasterBand(1)
-        outBand.WriteArray(zi[:,:,0])
-        zi = np.nan_to_num(griddata(out[:, 0:2], out[:,3], (xg, yg), method='linear'))
-        outBand = outDs.GetRasterBand(2)
-        outBand.WriteArray(zi[:,:,0])
-        goodbad=np.append(np.c_[good_xy, np.ones([good_xy.shape[0], 1])], np.c_[bad_xy, np.zeros([bad_xy.shape[0], 1])], 0)
-        quality =  np.nan_to_num(np.round(griddata(goodbad[:,0:2], goodbad[:,2], (xg, yg), method='linear'))).astype(np.int32)
-        outBand = outDs.GetRasterBand(3)
-        outBand.WriteArray(quality)
-        outDs.SetGeoTransform(tuple(GT1))
-        outDs.SetProjection(ftm.T_ds.GetProjection())
-        outDs=None
+    driver = ftm.T_ds.GetDriver()
+    delta_x=options.output_scale*np.abs(GT[1])
+    x0=GT[0]
+    y0=GT[3]
+    x0=delta_x*(np.ceil(x0/delta_x))
+    y0=delta_x*(np.ceil(y0/delta_x))
+    Gdx=GT[1]*options.output_scale
+    Gdy=GT[5]*options.output_scale
 
-        spread_file = output_prefix + '-D_sub_spread.tif'
-        print("Writing: " + spread_file)
-        outDs = driver.Create(spread_file,  nx1, ny1, 3, gdalconst.GDT_Int32)
-        # clip the output range to the specified limits
-        out[:,5]=np.minimum(out[:,5], options.M_max/options.output_scale)
-        out[:,6]=np.minimum(out[:,6], options.M_max/options.output_scale)
+    GT1=np.array(GT)
+    GT1[0]=x0;
+    GT1[3]=y0;
+    GT1[1]=Gdx
+    GT1[5]=Gdy
+    nx1=np.int(im_shape[1]/options.output_scale)
+    ny1=np.int(im_shape[0]/options.output_scale)
+    # clip the output range to the specified limits
+    out[:,5]=np.minimum(out[:,5], options.M_max/options.output_scale)
+    out[:,6]=np.minimum(out[:,6], options.M_max/options.output_scale)
 
-        # make a quality mask
-        goodbad=np.append(np.c_[good_xy, np.ones([good_xy.shape[0], 1])], np.c_[bad_xy, np.zeros([bad_xy.shape[0], 1])], 0)
-        quality =  np.nan_to_num(np.round(griddata(goodbad[:,0:2], goodbad[:,2], (xg, yg), method='linear'))).astype(np.int32)
-        N_dilate=np.ceil(options.coarse_skip/options.output_scale/4.)
-        xg1, yg1=np.meshgrid(np.arange(-N_dilate, N_dilate+1), np.arange(-N_dilate, N_dilate+1))
-        dilate_kernel=xg1**2+yg1**2 <=np.float32(N_dilate)**2
-        quality=binary_dilation(quality>0, dilate_kernel)
+    # establish the output posting points
+    xg0=(np.arange(0, nx1)+0.5)*Gdx+x0
+    yg0=(np.arange(0, ny1)+0.5)*Gdy+y0
 
-        # interpolate the scaled range values
-        zi = np.nan_to_num(griddata(out[:,0:2], out[:,5], (xg, yg), method='linear'))
-        mask=(zi[:,:,0]==0) | (quality==0)
-        zi[mask]=0
-        outBand = outDs.GetRasterBand(1)
-        outBand.WriteArray(zi[:,:,0])
-        zi = np.nan_to_num(griddata(out[:, 0:2], out[:,6], (xg, yg), method='linear'))
-        zi[mask]=0
-        outBand = outDs.GetRasterBand(2)
-        outBand.WriteArray(zi[:,:,0])
-        outBand = outDs.GetRasterBand(3)
-        outBand.WriteArray(quality)
-        outDs.SetGeoTransform(tuple(GT1))
-        outDs.SetProjection(ftm.T_ds.GetProjection())
-        outDs=None
+    disp_file = output_prefix + '-D_sub.tif'
+    print("Creating: " + disp_file)
+    Dsub_Ds = driver.Create(disp_file,  nx1, ny1, 3, gdalconst.GDT_Int32)
+    Dsub_Ds.SetGeoTransform(tuple(GT1))
+    Dsub_Ds.SetProjection(ftm.T_ds.GetProjection())
+    Dsub_subset=im_subset(0, 0, 0, 0, Dsub_Ds, 0)
+
+    spread_file = output_prefix + '-D_sub_spread.tif'
+    print("Creating: " + spread_file)
+    spread_Ds = driver.Create(spread_file,  nx1, ny1, 3, gdalconst.GDT_Int32)
+    spread_Ds.SetGeoTransform(tuple(GT1))
+    spread_Ds.SetProjection(ftm.T_ds.GetProjection())
+    spread_subset=im_subset(0, 0, 0, 0, spread_Ds, 0)
+
+    goodbad=np.append(np.c_[good_xy, np.ones([good_xy.shape[0], 1])], np.c_[bad_xy, np.zeros([bad_xy.shape[0], 1])], 0)
+    N_dilate=np.ceil(options.coarse_skip/options.output_scale/4.)
+    xg1, yg1=np.meshgrid(np.arange(-N_dilate, N_dilate+1), np.arange(-N_dilate, N_dilate+1))
+    dilate_kernel=xg1**2+yg1**2 <=np.float32(N_dilate)**2
+
+    # loop over blocks in the output file
+    stride=out_blocksize-out_block_pad
+    cg, rg=np.meshgrid(np.arange(0, nx1, stride),    np.arange(0, ny1, stride))
+    for c0, r0 in zip(cg.ravel(), rg.ravel()) :
+        # select the range of pixels for the output subset
+        out_sub_c0=c0-out_block_pad
+        out_sub_c1=c0+out_blocksize+out_block_pad
+        out_sub_r0=r0-out_block_pad
+        out_sub_r1=r0+out_blocksize+out_block_pad
+        out_sub_nc=out_sub_c1-out_sub_c0
+        out_sub_nr=out_sub_r1-out_sub_r0
+        if (out_sub_nc < 2*out_block_pad) or  (out_sub_nr < 2*out_block_pad) :
+            continue
+
+        Dsub_subset.setBounds(out_sub_c0, out_sub_r0, out_sub_c1-out_sub_c0, out_sub_r1-out_sub_r0)
+        spread_subset.setBounds(out_sub_c0, out_sub_r0, out_sub_c1-out_sub_c0, out_sub_r1-out_sub_r0)
+        XR=GT1[0]+GT1[1]*np.array([out_sub_c0,out_sub_c1])
+        YR=GT1[3]+GT1[5]*np.array([out_sub_r0,out_sub_r1])
+        # select the points to be interpolated for this subset
+        these_pts=np.where((out[:,0] >= np.min(XR)) & (out[:,0] <= np.max(XR)) & (out[:,1] >= np.min(YR)) & (out[:,1] <= np.max(YR)))[0]
+        if these_pts.shape[1] < 9:
+            continue
+        out_local=out[these_pts,:].squeeze()
+        zi=np.zeros([3, out_sub_nr, out_sub_nc])
+        # generate output-coordinate rasters
+        xg, yg=np.meshgrid(GT1[0]+GT1[1]*(0.5+np.arange(out_sub_c0,out_sub_c1)),
+                           GT1[3]+GT1[5]*(0.5+np.arange(out_sub_r0,out_sub_r1)))
+        # run the x and y grids
+        try:
+            zi[0, :, :] = np.nan_to_num(griddata(out_local[:, 0:2], out_local[:,2], (xg, yg), method='linear')).squeeze()
+        except Exception, e:
+            print "gridding error for x disparities, writing zeros to file:"
+            print e.message
+        try:
+            zi[1, :, :] = np.nan_to_num(griddata(out_local[:, 0:2], out_local[:,3], (xg, yg), method='linear')).squeeze()
+        except Exception, e:
+            print "gridding error for y disparities, writing zeros to file:"
+        # make a data-quality mask.  If there are fewer than nine points, skip
+        gb_pts=np.where((goodbad[:,0] >= np.min(XR)) & (goodbad[:,0] <= np.max(XR)) & (goodbad[:,1] >= np.min(YR)) & (goodbad[:,1] <= np.max(YR)))[0]
+        if np.max(gb_pts.shape) > 9:
+            goodbad_local=goodbad[gb_pts,:].squeeze()
+            try:
+                quality=np.nan_to_num(np.round(griddata(goodbad_local[:,0:2], goodbad_local[:,2], (xg, yg), method='linear'))).astype(np.int32).squeeze()
+            except Exception, e:
+                quality=np.zeros([out_sub_nr, out_sub_nc])
+                print "gridding error for disparity quality, writing zeros to file:"
+                print e.message
+            quality=binary_dilation(quality>0, dilate_kernel)
+        else:
+            quality=np.zeros([out_sub_nr, out_sub_nc])
+        zi[2, :, :] =   quality
+        Dsub_subset.z=zi
+        Dsub_subset.trim_from_edges([out_block_pad, out_block_pad], [out_block_pad, out_block_pad])
+        Dsub_subset.writeSubsetTo([1,2,3], Dsub_subset )
+
+       # interpolate the spread values
+        zi=np.zeros([3, out_sub_r1-out_sub_r0, out_sub_c1-out_sub_c0])
+        try:
+            ztemp=np.nan_to_num(griddata(out_local[:,0:2], out_local[:,5], (xg, yg), method='linear')).squeeze()
+        except Exception, e:
+            print "gridding error for disparity spread, writing zeros to file:"
+        mask=(ztemp==0) | (quality==0)
+        ztemp[mask]=0
+        zi[0, :, :] = ztemp
+        try:
+            ztemp = np.nan_to_num(griddata(out_local[:, 0:2], out_local[:,6], (xg, yg), method='linear')).squeeze()
+        except Exception, e:
+            print "gridding error for disparity spread, writing zeros to file:"
+
+        mask=(ztemp==0) | (quality==0)
+        ztemp[mask]=0
+        zi[1, :, :] = ztemp
+        zi[2, :, :] = quality
+        spread_subset.z=zi
+        spread_subset.trim_from_edges([out_block_pad,out_block_pad], [out_block_pad, out_block_pad])
+        spread_subset.writeSubsetTo([1,2,3],spread_subset )
+    spread_Ds=None
+    Dsub_Ds=None
 
     print "End: " + str(datetime.datetime.now())
 
