@@ -889,7 +889,7 @@ def local_ep_test( xy, dxy, C, global_ep_ctr=None,  global_ep_vec=None, Lgrid=50
                 delta_p68_global=ss.scoreatpercentile(delta_global[C[els].ravel()>C_tol], 68.)
                 # check if the global EP vector gives a sharper distribution
                 if delta_p68_global < 0.75*delta_p68:
-                    print "using global"
+                    #print "using global"
                     delta_p68=delta_p68_global
                     ep_ctr=global_ep_ctr
                     ep_vec=global_ep_vec
@@ -978,6 +978,9 @@ def grid_disp(xg, yg, xy, dx, dy, ex, ey, L_valid, N_coarse, dispDs, spreadDs, d
     spreadDs.GetRasterBand(2).WriteArray(zi[:,:,0], int(cr_out[0]), int(cr_out[1]))
     spreadDs.GetRasterBand(3).WriteArray(dist_mask.astype('float32'), int(cr_out[0]), int(cr_out[1]))
     return
+
+def mad(a, c=0.6745):
+    return np.median(np.fabs(a - np.median(a)))/c
 
 def main():
     """ For a pair of images, perform a sparse image match using the full
@@ -1071,9 +1074,11 @@ def main():
         in_mask=None
 
     #undocumented options#
-    C_tol=0.25  # minimum quality for strong matches, used in defining the epipolar vector estimate and in rejecting weak matches in the use_minimum_disparity_differences test.
+    C_tol=0.40  # minimum quality for strong matches, used in defining the epipolar vector estimate and in rejecting weak matches in the use_minimum_disparity_differences test.
     F_ep_pts_to_use=0.9
-    ep_tol_max=32
+    #Multiplier for mad, used to determine ep_tol
+    ep_fmadcoeff=5
+    ep_tol_max=64
     ep_tol_min=4
     dxy_slope_tol=3.0
     min_npts = 8  #Minimum number of coarse points in any dimension
@@ -1179,19 +1184,18 @@ def main():
         # run the epipolar fit, establish a tolerance, run again
         ep_vec, dxy_ctr=est_epipolar_vec(dxy, C, C_tol, F_ep_pts_to_use)
         good, ep_dist=test_epipolar(dxy_ctr, ep_vec, dxy, ep_tol_max)
-        ep_f90=ss.scoreatpercentile(ep_dist[C.ravel()>C_tol], 90)
-        ep_tol=np.minimum(ep_tol_max,np.maximum(ep_tol_min, ep_f90))
+        ep_fperc = mad(ep_dist[C.ravel()>C_tol]) * ep_fmadcoeff
+        ep_tol=np.minimum(ep_tol_max,np.maximum(ep_tol_min, ep_fperc))
         if options.Debug:
-            print " ---First estimate of global ep vec is (%f,%f), tol=%f, ep_dist_f90=%f" % (ep_vec[0], ep_vec[1], ep_tol, ep_f90)
-
+            print " --- ep vec estimated at(%f,%f), tol=%f, ep_fltr_tol=%f" % (ep_vec[0], ep_vec[1], ep_tol, ep_fperc)
         # run fit again if any points were marked as bad in the first epipolar test
         if  np.any(~good):
             ep_vec, dxy_ctr=est_epipolar_vec(dxy[good,:], C[good,:], C_tol, F_ep_pts_to_use)
-            ep_f90= ss.scoreatpercentile(ep_dist[C.ravel()>C_tol], 90)
-            ep_tol=np.minimum(ep_tol_max,np.maximum(ep_tol_min, ep_f90))
+            ep_fperc = mad(ep_dist[C.ravel()>C_tol]) * ep_fmadcoeff
+            ep_tol=np.minimum(ep_tol_max,np.maximum(ep_tol_min, ep_fperc))
             good, ep_dist=test_epipolar(dxy_ctr, ep_vec, dxy, ep_tol)
             if options.Debug:
-                print " ---Refined global ep vec estimated at(%f,%f), tol=%f, ep_dist_f90=%f" % (ep_vec[0], ep_vec[1], ep_tol, ep_f90)
+                print " ---Refined global ep vec estimated at(%f,%f),tol=%f, ep_fltr_tol=%f" % (ep_vec[0], ep_vec[1], ep_tol, ep_fperc)
 
 
     if options.epipolar_fltr is False:
@@ -1199,7 +1203,8 @@ def main():
         good = (dxy != np.nan)[:,0]
         if options.Debug:
             print "---ignoring global epipolar filter"
-
+    if (good.size == 0):
+        die('\nERROR: No good matches found after initial search', code=3)
     if options.local_EP:
         good=local_ep_test(xy, dxy, C, global_ep_vec=ep_vec, global_ep_ctr=dxy_ctr, N_min=np.minimum(200, xy.shape[0]), C_tol=C_tol)
         if DOPLOT:
@@ -1370,11 +1375,13 @@ def main():
         P_high=(ss.scoreatpercentile(R_dxy_score[C>C_tol,0], 90), ss.scoreatpercentile(R_dxy_score[C>C_tol,2], 90))
         R_max = np.maximum(P_high, MDC_lim_min)
         R_max = np.minimum(R_max, MDC_lim_max)
-        bad_xy=all_pts[np.logical_and(C<C_tol, np.logical_or((R_dxy_score[:,0] > R_max[0]) ,  (R_dxy_score[:,2] > R_max[1]))),:]
+        bad_by_percentile=np.logical_and(C<C_tol, np.logical_or((R_dxy_score[:,0] > R_max[0]) ,  (R_dxy_score[:,2] > R_max[1])))
+        bad_fallback= np.logical_or((R_dxy_score[:,0] > MDC_lim_max) ,  (R_dxy_score[:,2] > MDC_lim_max))
+        bad_xy=all_pts[np.logical_or(bad_by_percentile, bad_fallback),:]
         # mark points that failed the min_delta_disparity test with an 8
         bad_mask_mat = bad_mask_mat + coo_matrix((8*np.ones_like(bad_xy[:,1]), (bad_xy[:,1], bad_xy[:,0])), shape=im_shape).tocsr()
         if options.Debug:
-            print "rejecting %d detected outliers using the minimum-disparity-difference test with R_max = %f, %f" % (bad_xy.shape[0], R_max[0], R_max[1])
+            print "rejecting %d detected outliers using the minimum-disparity-cluster test with R_max = %f, %f" % (bad_xy.shape[0], R_max[0], R_max[1])
         # delete the bad values, convert dx dy, and C to lil matrices
         C_mat=C_mat.tolil()
         dx_mat=dx_mat.tolil()
@@ -1531,7 +1538,7 @@ def main():
                     print "     gridding output for col %d out of %d, row %d out of %d" % (int(c0/OutBlocksize)+1, int(c0_out[-1]/OutBlocksize)+1, int(r0/OutBlocksize)+1, int(r0_out[-1]/OutBlocksize)+1)
                 cols=np.arange(c0, np.minimum(c0+OutBlocksize, len(xg)))
                 rows=np.arange(r0, np.minimum(r0+OutBlocksize, len(yg)))
-                if (len(rows)==0) | (len(cols)==0):
+                if (len(rows)<=1) | (len(cols)<=1):
                     continue
                 [xg_sub, yg_sub]=np.meshgrid(xg[cols], yg[rows])
                 XR_out=np.array([np.amin(xg[cols])-grid_pad, np.amax(xg[cols])+grid_pad])
